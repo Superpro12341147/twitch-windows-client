@@ -26,6 +26,14 @@ The standalone GUI executable is
 `target\release\twitch-windows-client.exe`. It opens without a terminal window;
 startup errors are shown in a dialog.
 
+## GitHub releases
+
+Push a version tag matching the version in `Cargo.toml` (for example,
+`v0.1.0`) to run the Windows release workflow. It checks formatting, tests and
+builds the app, then publishes the executable and a ZIP with the README and
+license to a GitHub Release. Running the workflow manually builds the same
+assets without publishing a release.
+
 The WebView2 browser profile, including Twitch sign-in data, is stored under
 `%LOCALAPPDATA%\TwitchWindowsClient\WebView2`.
 
