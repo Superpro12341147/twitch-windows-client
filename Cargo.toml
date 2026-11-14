@@ -1,0 +1,10 @@
+[package]
+name = "twitch-windows-client"
+version = "0.1.0"
+edition = "2021"
+description = "A lightweight Windows desktop shell for Twitch"
+license = "MIT"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+tao = "0.34"
+wry = "0.53"
