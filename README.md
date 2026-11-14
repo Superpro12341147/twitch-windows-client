@@ -22,5 +22,21 @@ Build an optimized executable with:
 cargo build --release
 ```
 
+The standalone GUI executable is
+`target\release\twitch-windows-client.exe`. It opens without a terminal window;
+startup errors are shown in a dialog.
+
 The WebView2 browser profile, including Twitch sign-in data, is stored under
 `%LOCALAPPDATA%\TwitchWindowsClient\WebView2`.
+
+## Plugins
+
+On first launch, the example ad-blocker plugin is copied to
+`%LOCALAPPDATA%\TwitchWindowsClient\plugins`. The client loads `.js` files in
+that folder in filename order at startup. Add or edit a plugin there, then
+restart the client. Remove `ad-blocker.js` to disable the example.
+
+Plugins are local JavaScript injected into Twitch pages and can access page
+content and session data. Only install scripts you trust. The example blocks
+requests to several common third-party advertising domains and hides matching
+banner elements; it does not block Twitch's in-stream video ads.
