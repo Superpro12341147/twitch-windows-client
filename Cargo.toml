@@ -1,6 +1,6 @@
 [package]
 name = "twitch-windows-client"
-version = "1.0.1"
+version = "1.0.2"
 edition = "2021"
 description = "A lightweight Windows desktop shell for Twitch"
 license = "MIT"
@@ -10,8 +10,8 @@ build = "build.rs"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tao = "0.34"
-windows = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
-wry = "0.53"
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+wry = { version = "0.53", features = ["devtools"] }
 
 [build-dependencies]
 winres = "0.1"

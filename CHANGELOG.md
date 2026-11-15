@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.0.2] - 2026-11-14
+
+### Added
+
+- Add a per-user Windows Start Menu shortcut.
+- Add F12 and in-app controls for opening WebView2 Developer Tools, with a
+  console warning about inspecting signed-in session data.
+- Add a draggable always-on-top mini player and a resizable 2-4 stream grid.
+- Keep multi-stream audio limited to the first stream.
+- Integrate Twitch stream-ad playlist handling adapted from My AdBlock.
+
+### Changed
+
+- Update unchanged copies of the previous bundled ad blocker while preserving
+  user-customized plugin files.
+
 ## [1.0.1] - 2026-11-14
 
 ### Added

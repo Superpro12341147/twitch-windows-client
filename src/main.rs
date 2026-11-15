@@ -32,11 +32,87 @@ fn show_error(message: &str) {
 }
 
 #[cfg(target_os = "windows")]
+struct ComUninitialize;
+
+#[cfg(target_os = "windows")]
+impl Drop for ComUninitialize {
+    fn drop(&mut self) {
+        unsafe {
+            windows::Win32::System::Com::CoUninitialize();
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn create_start_menu_shortcut() -> Result<(), Box<dyn std::error::Error>> {
+    use std::{env, fs, io, os::windows::ffi::OsStrExt, path::PathBuf};
+    use windows::{
+        core::{Interface, PCWSTR},
+        Win32::{
+            System::Com::{
+                CoCreateInstance, CoInitializeEx, IPersistFile, CLSCTX_INPROC_SERVER,
+                COINIT_APARTMENTTHREADED,
+            },
+            UI::Shell::{IShellLinkW, ShellLink},
+        },
+    };
+
+    let app_data = env::var_os("APPDATA")
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "APPDATA is not set"))?;
+    let programs = PathBuf::from(app_data).join("Microsoft\\Windows\\Start Menu\\Programs");
+    fs::create_dir_all(&programs)?;
+    let shortcut_path = programs.join("Twitch Windows Client.lnk");
+    let executable = env::current_exe()?;
+    let working_directory = executable.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Executable has no parent directory",
+        )
+    })?;
+    let executable_wide: Vec<u16> = executable
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let working_directory_wide: Vec<u16> = working_directory
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let description: Vec<u16> = "Lightweight Twitch desktop client"
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let shortcut_wide: Vec<u16> = shortcut_path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+
+    unsafe {
+        CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()?;
+        let _com = ComUninitialize;
+        let shell_link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER)?;
+        shell_link.SetPath(PCWSTR(executable_wide.as_ptr()))?;
+        shell_link.SetWorkingDirectory(PCWSTR(working_directory_wide.as_ptr()))?;
+        shell_link.SetDescription(PCWSTR(description.as_ptr()))?;
+        shell_link.SetIconLocation(PCWSTR(executable_wide.as_ptr()), 0)?;
+        let persist_file: IPersistFile = shell_link.cast()?;
+        persist_file.Save(PCWSTR(shortcut_wide.as_ptr()), true)?;
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
 #[derive(serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum UiMessage {
     SetPlugin { name: String, enabled: bool },
     SetTheme { name: Option<String> },
+    OpenMiniPlayer { channel: String },
+    OpenMultiStream { channels: Vec<String> },
+    OpenDevTools,
 }
 
 #[cfg(target_os = "windows")]
@@ -60,17 +136,26 @@ struct Theme {
 }
 
 #[cfg(target_os = "windows")]
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum AppEvent {
     ReloadSettings,
+    OpenPlayers(Vec<String>),
+    OpenDevTools,
+}
+
+#[cfg(target_os = "windows")]
+struct PlayerWindow {
+    webviews: Vec<wry::WebView>,
+    window: tao::window::Window,
 }
 
 #[cfg(target_os = "windows")]
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     use std::{env, fs, io, path::PathBuf};
     use tao::{
-        event::{Event, WindowEvent},
+        event::{ElementState, Event, WindowEvent},
         event_loop::{ControlFlow, EventLoopBuilder},
+        keyboard::KeyCode,
         window::{Icon, WindowBuilder},
     };
     use wry::WebContext;
@@ -89,11 +174,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "ad-blocker.js",
         include_str!("../plugins/ad-blocker.js"),
     )?;
+    upgrade_example_if_unchanged(
+        &plugins_dir.join("ad-blocker.js"),
+        include_str!("../plugins/ad-blocker-v1.js"),
+        include_str!("../plugins/ad-blocker.js"),
+    )?;
     ensure_example(
         &themes_dir,
         "catppuccin-mocha.css",
         include_str!("../themes/catppuccin-mocha.css"),
     )?;
+    create_start_menu_shortcut()?;
 
     let settings_path = app_data_dir.join("settings.json");
     let plugins = load_plugins(&plugins_dir)?;
@@ -125,8 +216,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         &settings_path,
         proxy.clone(),
     )?);
+    let mut player_windows = Vec::<PlayerWindow>::new();
 
-    event_loop.run(move |event, _, control_flow| {
+    event_loop.run(move |event, target, control_flow| {
         *control_flow = ControlFlow::Wait;
         match event {
             Event::UserEvent(AppEvent::ReloadSettings) => {
@@ -154,10 +246,76 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
+            Event::UserEvent(AppEvent::OpenPlayers(channels)) => {
+                let always_on_top = channels.len() == 1;
+                let title = if always_on_top {
+                    format!("Twitch Mini Player - {}", channels[0])
+                } else {
+                    "Twitch Multi-stream".to_owned()
+                };
+                match build_player_window(
+                    target,
+                    &mut web_context,
+                    &plugins,
+                    &settings,
+                    &channels,
+                    &title,
+                    always_on_top,
+                ) {
+                    Ok(player_window) => player_windows.push(player_window),
+                    Err(error) => {
+                        show_error(&format!("Could not open Twitch player window: {error}"));
+                    }
+                }
+            }
+            Event::UserEvent(AppEvent::OpenDevTools) => {
+                if let Some(webview) = webview.as_ref() {
+                    webview.open_devtools();
+                }
+            }
             Event::WindowEvent {
+                window_id,
+                event: WindowEvent::KeyboardInput { event, .. },
+                ..
+            } if event.state == ElementState::Pressed && event.physical_key == KeyCode::F12 => {
+                if window_id == window.id() {
+                    if let Some(webview) = webview.as_ref() {
+                        webview.open_devtools();
+                    }
+                } else if let Some(player_window) = player_windows
+                    .iter()
+                    .find(|player_window| player_window.window.id() == window_id)
+                {
+                    if let Some(webview) = player_window.webviews.first() {
+                        webview.open_devtools();
+                    }
+                }
+            }
+            Event::WindowEvent {
+                window_id,
+                event: WindowEvent::Resized(size),
+                ..
+            } => {
+                if let Some(player_window) = player_windows
+                    .iter()
+                    .find(|player_window| player_window.window.id() == window_id)
+                {
+                    if let Err(error) = layout_player_webviews(player_window, size) {
+                        show_error(&format!("Could not resize Twitch players: {error}"));
+                    }
+                }
+            }
+            Event::WindowEvent {
+                window_id,
                 event: WindowEvent::CloseRequested,
                 ..
-            } => *control_flow = ControlFlow::Exit,
+            } => {
+                if window_id == window.id() {
+                    *control_flow = ControlFlow::Exit;
+                } else {
+                    player_windows.retain(|player_window| player_window.window.id() != window_id);
+                }
+            }
             _ => {}
         }
     });
@@ -196,6 +354,7 @@ fn build_webview(
         "(() => {{\n\
             if (window.top !== window) return;\n\
             if (location.hostname !== 'twitch.tv' && !location.hostname.endsWith('.twitch.tv')) return;\n\
+            console.warn('[Twitch Windows Client] Developer tools can inspect page content and your signed-in session. Keep cookies and tokens private.');\n\
             window.__twitchClientConfig = {config};\n\
             {ui}\n\
         }})();",
@@ -204,17 +363,24 @@ fn build_webview(
     );
 
     let mut builder = WebViewBuilder::new_with_web_context(web_context)
+        .with_devtools(true)
         .with_initialization_script(settings_script);
     for plugin in plugins
         .iter()
         .filter(|plugin| settings.plugins.contains(&plugin.filename))
     {
+        let frame_guard = if plugin.filename == "ad-blocker.js" {
+            ""
+        } else {
+            "if (window.top !== window) return;\n"
+        };
         let script = format!(
             "(() => {{\n\
-                if (window.top !== window) return;\n\
+                {frame_guard}\
                 if (location.hostname !== 'twitch.tv' && !location.hostname.endsWith('.twitch.tv')) return;\n\
                 {source}\n\
             }})();",
+            frame_guard = frame_guard,
             source = plugin.source,
         );
         builder = builder.with_initialization_script(script);
@@ -263,6 +429,35 @@ fn build_webview(
         let Ok(message) = serde_json::from_str::<UiMessage>(request.body()) else {
             return;
         };
+        match &message {
+            UiMessage::OpenMiniPlayer { channel } => {
+                if !is_valid_channel_name(channel) {
+                    show_error("The channel name is invalid.");
+                    return;
+                }
+                if let Err(error) = proxy.send_event(AppEvent::OpenPlayers(vec![channel.clone()])) {
+                    show_error(&format!("Could not open the mini player: {error}"));
+                }
+                return;
+            }
+            UiMessage::OpenMultiStream { channels } => {
+                if !are_valid_multi_stream_channels(channels) {
+                    show_error("Enter 2-4 unique Twitch channel names using letters, numbers, and underscores.");
+                    return;
+                }
+                if let Err(error) = proxy.send_event(AppEvent::OpenPlayers(channels.clone())) {
+                    show_error(&format!("Could not open the multi-stream view: {error}"));
+                }
+                return;
+            }
+            UiMessage::OpenDevTools => {
+                if let Err(error) = proxy.send_event(AppEvent::OpenDevTools) {
+                    show_error(&format!("Could not open Developer Tools: {error}"));
+                }
+                return;
+            }
+            _ => {}
+        }
         let mut settings = match load_settings(&settings_path) {
             Ok(settings) => settings,
             Err(error) => {
@@ -285,6 +480,144 @@ fn build_webview(
     });
 
     Ok(builder.with_url("https://www.twitch.tv/").build(window)?)
+}
+
+#[cfg(target_os = "windows")]
+fn build_player_window(
+    target: &tao::event_loop::EventLoopWindowTarget<AppEvent>,
+    web_context: &mut wry::WebContext,
+    plugins: &[Plugin],
+    settings: &Settings,
+    channels: &[String],
+    title: &str,
+    always_on_top: bool,
+) -> Result<PlayerWindow, Box<dyn std::error::Error>> {
+    use tao::{dpi::LogicalSize, window::WindowBuilder};
+    use wry::WebViewBuilder;
+
+    let (width, height) = if always_on_top {
+        (640.0, 400.0)
+    } else {
+        (1280.0, 800.0)
+    };
+    let icon = tao::window::Icon::from_rgba(
+        include_bytes!("../assets/twitch-client.rgba").to_vec(),
+        64,
+        64,
+    )?;
+    let window = WindowBuilder::new()
+        .with_title(title)
+        .with_window_icon(Some(icon))
+        .with_inner_size(LogicalSize::new(width, height))
+        .with_always_on_top(always_on_top)
+        .build(target)?;
+    let size = window.inner_size();
+    let mut webviews = Vec::with_capacity(channels.len());
+
+    for (index, channel) in channels.iter().enumerate() {
+        let bounds = player_bounds(index, channels.len(), size.width, size.height);
+        let settings_script = "(() => {\n\
+                if (location.hostname !== 'twitch.tv' && !location.hostname.endsWith('.twitch.tv')) return;\n\
+                console.warn('[Twitch Windows Client] Developer tools can inspect page content and your signed-in session. Keep cookies and tokens private.');\n\
+            })();"
+            .to_owned();
+        let mut builder = WebViewBuilder::new_with_web_context(web_context)
+            .with_devtools(true)
+            .with_bounds(bounds)
+            .with_initialization_script(settings_script)
+            .with_url(format!("https://www.twitch.tv/popout/{channel}/player"));
+        if channels.len() > 1 && index > 0 {
+            builder = builder.with_initialization_script(
+                "(() => {\n\
+                    const mute = (video) => {\n\
+                        const enforceMute = () => {\n\
+                            if (!video.muted || video.volume !== 0) {\n\
+                                video.muted = true;\n\
+                                video.volume = 0;\n\
+                            }\n\
+                        };\n\
+                        video.addEventListener('volumechange', enforceMute);\n\
+                        enforceMute();\n\
+                    };\n\
+                    const scan = (node) => {\n\
+                        if (node instanceof HTMLVideoElement) mute(node);\n\
+                        else if (node.querySelectorAll) node.querySelectorAll('video').forEach(mute);\n\
+                    };\n\
+                    new MutationObserver((records) => records.forEach((record) => record.addedNodes.forEach(scan)))\n\
+                        .observe(document, { childList: true, subtree: true });\n\
+                    document.querySelectorAll('video').forEach(mute);\n\
+                })();",
+            );
+        }
+
+        for plugin in plugins
+            .iter()
+            .filter(|plugin| settings.plugins.contains(&plugin.filename))
+        {
+            let frame_guard = if plugin.filename == "ad-blocker.js" {
+                ""
+            } else {
+                "if (window.top !== window) return;\n"
+            };
+            builder = builder.with_initialization_script(format!(
+                "(() => {{\n\
+                    {frame_guard}\
+                    if (location.hostname !== 'twitch.tv' && !location.hostname.endsWith('.twitch.tv')) return;\n\
+                    {source}\n\
+                }})();",
+                frame_guard = frame_guard,
+                source = plugin.source,
+            ));
+        }
+
+        webviews.push(builder.build_as_child(&window)?);
+    }
+
+    Ok(PlayerWindow { webviews, window })
+}
+
+#[cfg(target_os = "windows")]
+fn player_bounds(index: usize, count: usize, width: u32, height: u32) -> wry::Rect {
+    use wry::{
+        dpi::{PhysicalPosition, PhysicalSize},
+        Rect,
+    };
+
+    let columns = if count == 1 { 1 } else { 2 };
+    let rows = count.div_ceil(columns);
+    let mut cell_width = width / columns as u32;
+    let cell_height = height / rows as u32;
+    let mut column = index % columns;
+    let row = index / columns;
+    if count == 3 && index == 2 {
+        cell_width = width;
+        column = 0;
+    }
+
+    Rect {
+        position: PhysicalPosition::new(
+            (column as u32 * (width / columns as u32)) as i32,
+            (row as u32 * cell_height) as i32,
+        )
+        .into(),
+        size: PhysicalSize::new(cell_width, cell_height).into(),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn layout_player_webviews(
+    player_window: &PlayerWindow,
+    size: tao::dpi::PhysicalSize<u32>,
+) -> wry::Result<()> {
+    for (index, webview) in player_window.webviews.iter().enumerate() {
+        webview.set_bounds(player_bounds(
+            index,
+            player_window.webviews.len(),
+            size.width,
+            size.height,
+        ))?;
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "windows")]
@@ -316,6 +649,31 @@ fn apply_ui_message(
 }
 
 #[cfg(target_os = "windows")]
+fn is_valid_channel_name(channel: &str) -> bool {
+    !channel.is_empty()
+        && channel.len() <= 25
+        && channel
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+}
+
+#[cfg(target_os = "windows")]
+fn are_valid_multi_stream_channels(channels: &[String]) -> bool {
+    use std::collections::BTreeSet;
+
+    (2..=4).contains(&channels.len())
+        && channels
+            .iter()
+            .all(|channel| is_valid_channel_name(channel))
+        && channels
+            .iter()
+            .map(|channel| channel.to_ascii_lowercase())
+            .collect::<BTreeSet<_>>()
+            .len()
+            == channels.len()
+}
+
+#[cfg(target_os = "windows")]
 fn ensure_example(
     directory: &std::path::Path,
     filename: &str,
@@ -340,6 +698,25 @@ fn ensure_example(
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(()),
         Err(error) => Err(error),
     }
+}
+
+#[cfg(target_os = "windows")]
+fn upgrade_example_if_unchanged(
+    path: &std::path::Path,
+    previous_source: &str,
+    source: &str,
+) -> std::io::Result<()> {
+    use std::{fs, io};
+
+    let existing = match fs::read_to_string(path) {
+        Ok(existing) => existing,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if existing.replace("\r\n", "\n") == previous_source.replace("\r\n", "\n") {
+        fs::write(path, source)?;
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "windows")]
@@ -427,7 +804,7 @@ fn save_settings(path: &std::path::Path, settings: &Settings) -> std::io::Result
 
 #[cfg(all(test, target_os = "windows"))]
 mod tests {
-    use super::{apply_ui_message, Settings, UiMessage};
+    use super::{apply_ui_message, upgrade_example_if_unchanged, Settings, UiMessage};
     use std::collections::BTreeSet;
 
     #[test]
@@ -489,6 +866,51 @@ mod tests {
             &valid_themes,
         ));
         assert_eq!(settings.theme.as_deref(), Some("theme.css"));
+    }
+
+    #[test]
+    fn bundled_plugin_upgrade_preserves_custom_edits() {
+        let directory = std::env::temp_dir().join(format!(
+            "twitch-client-adblock-migration-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("ad-blocker.js");
+
+        std::fs::write(&path, "old bundled source").unwrap();
+        upgrade_example_if_unchanged(&path, "old bundled source", "updated source").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "updated source");
+
+        std::fs::write(&path, "custom source").unwrap();
+        upgrade_example_if_unchanged(&path, "old bundled source", "newer source").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "custom source");
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn multi_stream_requires_unique_valid_channel_names() {
+        assert!(super::are_valid_multi_stream_channels(&[
+            "first".to_owned(),
+            "second_2".to_owned(),
+        ]));
+        assert!(!super::are_valid_multi_stream_channels(
+            &["only".to_owned()]
+        ));
+        assert!(!super::are_valid_multi_stream_channels(&[
+            "same".to_owned(),
+            "SAME".to_owned(),
+        ]));
+        assert!(!super::are_valid_multi_stream_channels(&[
+            "valid".to_owned(),
+            "invalid/name".to_owned(),
+        ]));
+        assert!(!super::are_valid_multi_stream_channels(&[
+            "one".to_owned(),
+            "two".to_owned(),
+            "three".to_owned(),
+            "four".to_owned(),
+            "five".to_owned(),
+        ]));
     }
 }
 

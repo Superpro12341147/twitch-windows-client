@@ -28,6 +28,11 @@
       padding: 9px 13px; font-weight: 600; cursor: pointer;
     }
     #open { box-shadow: 0 2px 12px #0008; }
+    .action { width:100%; margin-top:8px; text-align:left; }
+    #streams {
+      width:100%; margin-top:8px; padding:8px; color:#e6e9ef;
+      background:#313244; border:1px solid #585b70; border-radius:6px;
+    }
     #panel {
       width: 340px; max-height: min(75vh, 620px); overflow: auto;
       margin-top: 8px; padding: 18px; border-radius: 12px;
@@ -83,6 +88,15 @@
       }
       window.ipc.postMessage(JSON.stringify(message));
     };
+    const addAction = (text, onClick) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "save action";
+      button.textContent = text;
+      button.addEventListener("click", onClick);
+      panel.appendChild(button);
+      return button;
+    };
 
     addSection("Themes");
     const themeSelect = document.createElement("select");
@@ -105,6 +119,47 @@
     const themeHint = document.createElement("p");
     themeHint.textContent = "Add .css files to the themes folder. Theme changes reload Twitch.";
     panel.appendChild(themeHint);
+
+    addSection("Playback");
+    addAction("Pop out current stream", () => {
+      const match = location.pathname.match(/^\/([a-zA-Z0-9_]{1,25})\/?$/);
+      if (!match) {
+        window.alert("Open a streamer's channel page first, then try again.");
+        return;
+      }
+      send({ type: "open_mini_player", channel: match[1] });
+    });
+    const streamsInput = document.createElement("input");
+    streamsInput.id = "streams";
+    streamsInput.type = "text";
+    streamsInput.placeholder = "channel1, channel2, ...";
+    streamsInput.setAttribute("aria-label", "Twitch channels for multi-stream");
+    panel.appendChild(streamsInput);
+    const streamsHint = document.createElement("p");
+    streamsHint.textContent =
+      "Enter 2-4 channel names, separated by commas. Only the first stream has audio.";
+    panel.appendChild(streamsHint);
+    addAction("Open multi-stream", () => {
+      const channels = streamsInput.value
+        .split(",")
+        .map((channel) => channel.trim())
+        .filter(Boolean);
+      const validName = /^[a-zA-Z0-9_]{1,25}$/;
+      if (
+        channels.length < 2 ||
+        channels.length > 4 ||
+        channels.some((channel) => !validName.test(channel)) ||
+        new Set(channels.map((channel) => channel.toLowerCase())).size !==
+          channels.length
+      ) {
+        window.alert("Enter 2-4 unique Twitch channel names (letters, numbers, and underscores).");
+        return;
+      }
+      send({ type: "open_multi_stream", channels });
+    });
+    addAction("Inspect page (F12)", () => {
+      send({ type: "open_dev_tools" });
+    });
 
     addSection("Plugins");
     if (config.plugins.length === 0) {

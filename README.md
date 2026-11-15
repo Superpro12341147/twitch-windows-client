@@ -25,11 +25,12 @@ cargo build --release
 The standalone GUI executable is
 `target\release\twitch-windows-client.exe`. It opens without a terminal window;
 startup errors are shown in a dialog.
+On first run, the app adds a shortcut to your per-user Windows Start Menu.
 
 ## GitHub releases
 
 Push a version tag matching the version in `Cargo.toml` (for example,
-`v1.0.1`) or run the workflow manually to build the Windows release. Each run
+`v1.0.2`) or run the workflow manually to build the Windows release. Each run
 creates a **draft GitHub Release** containing the executable and a ZIP with the
 README, changelog, and license. Manual runs use a unique draft tag based on the
 workflow run number. Review the draft and publish it when ready.
@@ -48,10 +49,26 @@ Custom themes are `.css` files in
 is an example. Custom plugins are `.js` files in
 `%LOCALAPPDATA%\TwitchWindowsClient\plugins`; the bundled ad blocker is off
 until you explicitly enable it. Restart the app after adding or removing files.
+On upgrade, an unchanged copy of the previous bundled ad blocker is updated;
+customized plugin files are left untouched.
 
-The bundled ad blocker filters some third-party ad requests and banner elements,
-but it cannot block Twitch's in-stream ads, which are delivered through the
-player's video stream.
+The bundled ad blocker filters third-party ad requests and banner elements. Its
+Twitch stream-ad handling is adapted from [My AdBlock's Twitch worker
+patch](https://github.com/jakub-lgr/my-adblock/blob/a8d7f250b6dfede573a4d6c54d6fd148ecb70b4e/content/twitch-main.js)
+by Jakub L (MIT license; see
+[licenses/my-adblock-LICENSE.txt](licenses/my-adblock-LICENSE.txt)). It detects
+ad markers in video playlists, tries alternate Twitch player playlists, and
+falls back to removing marked ad segments. Twitch may change its player or ad
+delivery at any time, so stream-ad blocking is not guaranteed.
+
+Use **Pop out current stream** in Client settings on a channel page to open a
+draggable, always-on-top mini player. Enter 2-4 comma-separated channel names
+in the multi-stream field to open them together in a resizable grid window;
+audio is enabled for the first stream only.
+
+Press **F12** or choose **Inspect page** in Client settings to open Developer
+Tools. The console logs a warning because DevTools can inspect page content and
+your signed-in session. Do not copy or share cookies or tokens.
 
 Plugins execute as Twitch page scripts and may act through your signed-in
 session, so only enable code you trust. Themes are CSS-only but can still load
