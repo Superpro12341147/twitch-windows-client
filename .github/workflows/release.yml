@@ -29,6 +29,7 @@ jobs:
         run: cargo build --release --locked
 
       - name: Package release
+        id: package
         shell: pwsh
         run: |
           $version = (Select-String -Path Cargo.toml -Pattern '^version = "([^"]+)"$').Matches.Groups[1].Value
@@ -36,11 +37,18 @@ jobs:
             throw "Release tag $env:GITHUB_REF_NAME must match Cargo.toml version v$version."
           }
 
+          if ($env:GITHUB_REF.StartsWith("refs/tags/")) {
+            $releaseTag = $env:GITHUB_REF_NAME
+          } else {
+            $releaseTag = "draft-v$version-run-$env:GITHUB_RUN_NUMBER-attempt-$env:GITHUB_RUN_ATTEMPT"
+          }
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "release_tag=$releaseTag" -Encoding utf8
+
           $name = "TwitchWindowsClient-v$version-windows-x64"
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           Copy-Item target\release\twitch-windows-client.exe "dist\$name.exe"
-          Copy-Item -Path @("README.md", "LICENSE") -Destination dist
-          Compress-Archive -Path @("dist\$name.exe", "dist\README.md", "dist\LICENSE") -DestinationPath "dist\$name.zip"
+          Copy-Item -Path @("README.md", "CHANGELOG.md", "LICENSE") -Destination dist
+          Compress-Archive -Path @("dist\$name.exe", "dist\README.md", "dist\CHANGELOG.md", "dist\LICENSE") -DestinationPath "dist\$name.zip"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
@@ -49,11 +57,14 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
-      - name: Publish GitHub release
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Create draft GitHub release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.package.outputs.release_tag }}
+          target_commitish: ${{ github.sha }}
+          draft: true
           generate_release_notes: true
+          fail_on_unmatched_files: true
           files: |
             dist/*.exe
             dist/*.zip

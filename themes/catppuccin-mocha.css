@@ -1,0 +1,115 @@
+:root {
+  color-scheme: dark;
+  --ctp-rosewater: #f5e0dc;
+  --ctp-flamingo: #f2cdcd;
+  --ctp-pink: #f5c2e7;
+  --ctp-mauve: #cba6f7;
+  --ctp-red: #f38ba8;
+  --ctp-maroon: #eba0ac;
+  --ctp-peach: #fab387;
+  --ctp-yellow: #f9e2af;
+  --ctp-green: #a6e3a1;
+  --ctp-teal: #94e2d5;
+  --ctp-sky: #89dceb;
+  --ctp-sapphire: #74c7ec;
+  --ctp-blue: #89b4fa;
+  --ctp-lavender: #b4befe;
+  --ctp-text: #cdd6f4;
+  --ctp-subtext1: #bac2de;
+  --ctp-subtext0: #a6adc8;
+  --ctp-overlay2: #9399b2;
+  --ctp-overlay1: #7f849c;
+  --ctp-overlay0: #6c7086;
+  --ctp-surface2: #585b70;
+  --ctp-surface1: #45475a;
+  --ctp-surface0: #313244;
+  --ctp-base: #1e1e2e;
+  --ctp-mantle: #181825;
+  --ctp-crust: #11111b;
+
+  --color-background-base: var(--ctp-base);
+  --color-background-alt: var(--ctp-mantle);
+  --color-background-alt-2: var(--ctp-surface0);
+  --color-background-overlay: var(--ctp-crust);
+  --color-background-button-primary-default: var(--ctp-mauve);
+  --color-background-button-primary-hover: var(--ctp-pink);
+  --color-background-button-secondary-default: var(--ctp-surface0);
+  --color-background-button-secondary-hover: var(--ctp-surface1);
+  --color-text-base: var(--ctp-text);
+  --color-text-alt: var(--ctp-subtext0);
+  --color-text-link: var(--ctp-lavender);
+  --color-border-base: var(--ctp-surface1);
+  --color-border-input: var(--ctp-surface2);
+  --color-fill-button-icon: var(--ctp-text);
+}
+
+html,
+body,
+#root,
+.tw-root,
+.tw-root--theme-dark {
+  background-color: var(--ctp-base) !important;
+  color: var(--ctp-text) !important;
+}
+
+[data-a-target="top-nav-container"],
+#side-nav,
+[data-a-target*="chat"],
+[role="dialog"],
+[role="menu"],
+[role="listbox"] {
+  background-color: var(--ctp-mantle) !important;
+  color: var(--ctp-text) !important;
+}
+
+button,
+[role="button"],
+[role="tab"],
+[role="menuitem"],
+a {
+  color: var(--ctp-text) !important;
+}
+
+button:hover,
+[role="button"]:hover,
+a:hover {
+  color: var(--ctp-rosewater) !important;
+}
+
+input,
+textarea,
+select,
+[role="textbox"] {
+  background-color: var(--ctp-surface0) !important;
+  border-color: var(--ctp-surface1) !important;
+  color: var(--ctp-text) !important;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--ctp-overlay1) !important;
+}
+
+::selection {
+  background: var(--ctp-surface2);
+  color: var(--ctp-rosewater);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--ctp-mantle);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--ctp-surface1);
+  border: 2px solid var(--ctp-mantle);
+  border-radius: 8px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--ctp-surface2);
+}
