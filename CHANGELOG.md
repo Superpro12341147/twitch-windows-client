@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Add an app-specific Twitch ad blocker that matches alternate live HLS
+  segments by media time without replacing the player's whole playlist.
+- Add native WebView2 request interception for known client-side ad hosts,
+  without blocking Twitch playlists or media segments.
+
+### Changed
+
+- Replace the mini-player page window with WebView2 Picture-in-Picture for a
+  browser-style floating video window and native controls.
+
+### Fixed
+
+- Avoid corrupting playback when an ad playlist has no clean alternate, and
+  preserve sequence and timing metadata when replacing a matched ad segment.
+- Fetch and refresh alternate playlists in the background so failed requests
+  do not stall the player.
+- Migrate the previous YAML ad-blocker setting back to the bundled JavaScript
+  plugin.
+
 ## [1.0.2] - 2026-11-14
 
 ### Added

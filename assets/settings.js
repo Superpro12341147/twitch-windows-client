@@ -121,13 +121,41 @@
     panel.appendChild(themeHint);
 
     addSection("Playback");
-    addAction("Pop out current stream", () => {
-      const match = location.pathname.match(/^\/([a-zA-Z0-9_]{1,25})\/?$/);
-      if (!match) {
-        window.alert("Open a streamer's channel page first, then try again.");
+    addAction("Picture-in-Picture", () => {
+      if (document.pictureInPictureElement) {
+        document.exitPictureInPicture().catch((error) => {
+          window.alert(`Could not close Picture-in-Picture: ${error.message}`);
+        });
         return;
       }
-      send({ type: "open_mini_player", channel: match[1] });
+      if (
+        !document.pictureInPictureEnabled ||
+        typeof HTMLVideoElement.prototype.requestPictureInPicture !== "function"
+      ) {
+        window.alert("Picture-in-Picture is not available in this Twitch player.");
+        return;
+      }
+      const video = [...document.querySelectorAll("video")]
+        .filter(
+          (element) =>
+            !element.paused &&
+            !element.ended &&
+            element.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA,
+        )
+        .map((element) => {
+          const bounds = element.getBoundingClientRect();
+          return { element, area: bounds.width * bounds.height };
+        })
+        .filter(({ area }) => area > 0)
+        .sort((left, right) => right.area - left.area)[0]?.element;
+      if (!video) {
+        window.alert("Start a Twitch stream before opening Picture-in-Picture.");
+        return;
+      }
+      video.disablePictureInPicture = false;
+      video.requestPictureInPicture().catch((error) => {
+        window.alert(`Could not open Picture-in-Picture: ${error.message}`);
+      });
     });
     const streamsInput = document.createElement("input");
     streamsInput.id = "streams";
@@ -181,7 +209,9 @@
         });
       });
       const name = document.createElement("span");
-      name.textContent = plugin.replace(/\.js$/i, "").replace(/[-_]/g, " ");
+      name.textContent = plugin
+        .replace(/\.(?:js|yaml)$/i, "")
+        .replace(/[-_]/g, " ");
       label.append(checkbox, name);
       panel.appendChild(label);
     }
