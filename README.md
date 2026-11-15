@@ -52,11 +52,7 @@ until you explicitly enable it. Restart the app after adding or removing files.
 On upgrade, an unchanged copy of the previous bundled ad blocker is updated;
 customized plugin files are left untouched.
 
-The bundled ad blocker filters third-party ad requests and banner elements. Its
-Twitch stream-ad handling is adapted from [My AdBlock's Twitch worker
-patch](https://github.com/jakub-lgr/my-adblock/blob/a8d7f250b6dfede573a4d6c54d6fd148ecb70b4e/content/twitch-main.js)
-by Jakub L (MIT license; see
-[licenses/my-adblock-LICENSE.txt](licenses/my-adblock-LICENSE.txt)). It detects
+The bundled ad blocker filters third-party ad requests and banner elements. It detects
 ad markers in video playlists, tries alternate Twitch player playlists, and
 falls back to removing marked ad segments. Twitch may change its player or ad
 delivery at any time, so stream-ad blocking is not guaranteed.
