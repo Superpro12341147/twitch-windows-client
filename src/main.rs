@@ -105,12 +105,113 @@ fn create_start_menu_shortcut() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[cfg(target_os = "windows")]
+const NATIVE_AD_HOSTS: &[&str] = &[
+    "edge.ads.twitch.tv",
+    "ads.twitch.tv",
+    "doubleclick.net",
+    "googleadservices.com",
+    "googlesyndication.com",
+    "amazon-adsystem.com",
+];
+
+#[cfg(target_os = "windows")]
+const NATIVE_AD_REQUEST_FILTERS: &[&str] = &[
+    "https://edge.ads.twitch.tv/*",
+    "https://ads.twitch.tv/*",
+    "https://*.ads.twitch.tv/*",
+    "https://doubleclick.net/*",
+    "https://*.doubleclick.net/*",
+    "https://googleadservices.com/*",
+    "https://*.googleadservices.com/*",
+    "https://googlesyndication.com/*",
+    "https://*.googlesyndication.com/*",
+    "https://amazon-adsystem.com/*",
+    "https://*.amazon-adsystem.com/*",
+];
+
+#[cfg(target_os = "windows")]
+fn is_native_ad_request(url: &str) -> bool {
+    let Some((scheme, remainder)) = url.split_once("://") else {
+        return false;
+    };
+    if !scheme.eq_ignore_ascii_case("https") && !scheme.eq_ignore_ascii_case("http") {
+        return false;
+    }
+
+    let Some(authority) = remainder
+        .split(['/', '?', '#'])
+        .next()
+        .and_then(|authority| authority.rsplit('@').next())
+    else {
+        return false;
+    };
+    let host = authority
+        .split(':')
+        .next()
+        .unwrap_or_default()
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+
+    NATIVE_AD_HOSTS
+        .iter()
+        .any(|blocked| host == *blocked || host.ends_with(&format!(".{blocked}")))
+}
+
+#[cfg(target_os = "windows")]
+fn install_native_ad_blocker(webview: &wry::WebView) -> windows::core::Result<()> {
+    use webview2_com::{
+        take_pwstr, Microsoft::Web::WebView2::Win32::COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
+        WebResourceRequestedEventHandler,
+    };
+    use windows::core::HSTRING;
+    use wry::WebViewExtWindows;
+
+    let core_webview = webview.webview();
+    let environment = webview.environment();
+    for filter in NATIVE_AD_REQUEST_FILTERS {
+        unsafe {
+            core_webview.AddWebResourceRequestedFilter(
+                &HSTRING::from(*filter),
+                COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
+            )?;
+        }
+    }
+
+    let handler = WebResourceRequestedEventHandler::create(Box::new(move |_, args| {
+        let Some(args) = args else {
+            return Ok(());
+        };
+        let request = unsafe { args.Request()? };
+        let mut uri = windows::core::PWSTR::null();
+        unsafe {
+            request.Uri(&mut uri)?;
+        }
+        if !is_native_ad_request(&take_pwstr(uri)) {
+            return Ok(());
+        }
+
+        let reason = HSTRING::from("No Content");
+        let headers = HSTRING::from("Cache-Control: no-store\r\nContent-Length: 0\r\n");
+        let response =
+            unsafe { environment.CreateWebResourceResponse(None, 204, &reason, &headers)? };
+        unsafe {
+            args.SetResponse(&response)?;
+        }
+        Ok(())
+    }));
+    let mut token = 0;
+    unsafe {
+        core_webview.add_WebResourceRequested(&handler, &mut token)?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
 #[derive(serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum UiMessage {
     SetPlugin { name: String, enabled: bool },
     SetTheme { name: Option<String> },
-    OpenMiniPlayer { channel: String },
     OpenMultiStream { channels: Vec<String> },
     OpenDevTools,
 }
@@ -139,7 +240,7 @@ struct Theme {
 #[derive(Clone)]
 enum AppEvent {
     ReloadSettings,
-    OpenPlayers(Vec<String>),
+    OpenMultiStream(Vec<String>),
     OpenDevTools,
 }
 
@@ -179,6 +280,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         include_str!("../plugins/ad-blocker-v1.js"),
         include_str!("../plugins/ad-blocker.js"),
     )?;
+    repair_adblocker_worker_scope(&plugins_dir.join("ad-blocker.js"))?;
     ensure_example(
         &themes_dir,
         "catppuccin-mocha.css",
@@ -187,9 +289,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     create_start_menu_shortcut()?;
 
     let settings_path = app_data_dir.join("settings.json");
+    let mut settings = load_settings(&settings_path)?;
+    migrate_adblocker_setting(&settings_path, &mut settings)?;
     let plugins = load_plugins(&plugins_dir)?;
     let themes = load_themes(&themes_dir)?;
-    let settings = load_settings(&settings_path)?;
 
     let mut event_loop_builder = EventLoopBuilder::with_user_event();
     let event_loop = event_loop_builder.build();
@@ -246,21 +349,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
-            Event::UserEvent(AppEvent::OpenPlayers(channels)) => {
-                let always_on_top = channels.len() == 1;
-                let title = if always_on_top {
-                    format!("Twitch Mini Player - {}", channels[0])
-                } else {
-                    "Twitch Multi-stream".to_owned()
-                };
+            Event::UserEvent(AppEvent::OpenMultiStream(channels)) => {
                 match build_player_window(
                     target,
                     &mut web_context,
                     &plugins,
                     &settings,
                     &channels,
-                    &title,
-                    always_on_top,
+                    "Twitch Multi-stream",
                 ) {
                     Ok(player_window) => player_windows.push(player_window),
                     Err(error) => {
@@ -430,22 +526,12 @@ fn build_webview(
             return;
         };
         match &message {
-            UiMessage::OpenMiniPlayer { channel } => {
-                if !is_valid_channel_name(channel) {
-                    show_error("The channel name is invalid.");
-                    return;
-                }
-                if let Err(error) = proxy.send_event(AppEvent::OpenPlayers(vec![channel.clone()])) {
-                    show_error(&format!("Could not open the mini player: {error}"));
-                }
-                return;
-            }
             UiMessage::OpenMultiStream { channels } => {
                 if !are_valid_multi_stream_channels(channels) {
                     show_error("Enter 2-4 unique Twitch channel names using letters, numbers, and underscores.");
                     return;
                 }
-                if let Err(error) = proxy.send_event(AppEvent::OpenPlayers(channels.clone())) {
+                if let Err(error) = proxy.send_event(AppEvent::OpenMultiStream(channels.clone())) {
                     show_error(&format!("Could not open the multi-stream view: {error}"));
                 }
                 return;
@@ -479,7 +565,12 @@ fn build_webview(
         }
     });
 
-    Ok(builder.with_url("https://www.twitch.tv/").build(window)?)
+    let webview = builder.build(window)?;
+    if settings.plugins.contains("ad-blocker.js") {
+        install_native_ad_blocker(&webview)?;
+    }
+    webview.load_url("https://www.twitch.tv/")?;
+    Ok(webview)
 }
 
 #[cfg(target_os = "windows")]
@@ -490,16 +581,10 @@ fn build_player_window(
     settings: &Settings,
     channels: &[String],
     title: &str,
-    always_on_top: bool,
 ) -> Result<PlayerWindow, Box<dyn std::error::Error>> {
     use tao::{dpi::LogicalSize, window::WindowBuilder};
     use wry::WebViewBuilder;
 
-    let (width, height) = if always_on_top {
-        (640.0, 400.0)
-    } else {
-        (1280.0, 800.0)
-    };
     let icon = tao::window::Icon::from_rgba(
         include_bytes!("../assets/twitch-client.rgba").to_vec(),
         64,
@@ -508,8 +593,7 @@ fn build_player_window(
     let window = WindowBuilder::new()
         .with_title(title)
         .with_window_icon(Some(icon))
-        .with_inner_size(LogicalSize::new(width, height))
-        .with_always_on_top(always_on_top)
+        .with_inner_size(LogicalSize::new(1280.0, 800.0))
         .build(target)?;
     let size = window.inner_size();
     let mut webviews = Vec::with_capacity(channels.len());
@@ -524,8 +608,7 @@ fn build_player_window(
         let mut builder = WebViewBuilder::new_with_web_context(web_context)
             .with_devtools(true)
             .with_bounds(bounds)
-            .with_initialization_script(settings_script)
-            .with_url(format!("https://www.twitch.tv/popout/{channel}/player"));
+            .with_initialization_script(settings_script);
         if channels.len() > 1 && index > 0 {
             builder = builder.with_initialization_script(
                 "(() => {\n\
@@ -570,7 +653,12 @@ fn build_player_window(
             ));
         }
 
-        webviews.push(builder.build_as_child(&window)?);
+        let webview = builder.build_as_child(&window)?;
+        if settings.plugins.contains("ad-blocker.js") {
+            install_native_ad_blocker(&webview)?;
+        }
+        webview.load_url(&format!("https://www.twitch.tv/popout/{channel}/player"))?;
+        webviews.push(webview);
     }
 
     Ok(PlayerWindow { webviews, window })
@@ -720,6 +808,45 @@ fn upgrade_example_if_unchanged(
 }
 
 #[cfg(target_os = "windows")]
+fn repair_adblocker_worker_scope(path: &std::path::Path) -> std::io::Result<()> {
+    use std::{fs, io};
+
+    let mut source = match fs::read_to_string(path) {
+        Ok(source) => source,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    const BROKEN_BOUNDARY: &str = "  installStyle();\n})();\n\n// Adapted from My AdBlock's Twitch worker patch.\n// Copyright (c) 2026 Jakub L. Licensed under MIT; see\n// licenses/my-adblock-LICENSE.txt.\n(() => {\n  \"use strict\";\n";
+    const FIXED_BOUNDARY: &str = "  installStyle();\n\n// Adapted from My AdBlock's Twitch worker patch.\n// Copyright (c) 2026 Jakub L. Licensed under MIT; see\n// licenses/my-adblock-LICENSE.txt.\n";
+    let line_ending = if source.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
+    let broken_boundary = BROKEN_BOUNDARY.replace('\n', line_ending);
+    if let Some(start) = source.find(&broken_boundary) {
+        source.replace_range(
+            start..start + broken_boundary.len(),
+            &FIXED_BOUNDARY.replace('\n', line_ending),
+        );
+        fs::write(path, source)?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn migrate_adblocker_setting(
+    settings_path: &std::path::Path,
+    settings: &mut Settings,
+) -> std::io::Result<()> {
+    if settings.plugins.remove("ad-blocker.yaml") {
+        settings.plugins.insert("ad-blocker.js".to_owned());
+        save_settings(settings_path, settings)?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
 fn load_plugins(plugin_dir: &std::path::Path) -> std::io::Result<Vec<Plugin>> {
     use std::{ffi::OsStr, fs, io};
 
@@ -804,12 +931,56 @@ fn save_settings(path: &std::path::Path, settings: &Settings) -> std::io::Result
 
 #[cfg(all(test, target_os = "windows"))]
 mod tests {
-    use super::{apply_ui_message, upgrade_example_if_unchanged, Settings, UiMessage};
+    use super::{
+        apply_ui_message, is_native_ad_request, load_settings, migrate_adblocker_setting,
+        repair_adblocker_worker_scope, save_settings, upgrade_example_if_unchanged, Settings,
+        UiMessage,
+    };
     use std::collections::BTreeSet;
 
     #[test]
     fn plugins_are_disabled_by_default() {
         assert!(Settings::default().plugins.is_empty());
+    }
+
+    #[test]
+    fn native_ad_filter_matches_ad_hosts_without_matching_stream_hosts() {
+        assert!(is_native_ad_request(
+            "https://edge.ads.twitch.tv/ads?channel=example"
+        ));
+        assert!(is_native_ad_request(
+            "https://sub.doubleclick.net/pagead/ads"
+        ));
+        assert!(!is_native_ad_request(
+            "https://doubleclick.net.evil.example/ads"
+        ));
+        assert!(!is_native_ad_request(
+            "https://example.com/edge.ads.twitch.tv/ads"
+        ));
+        assert!(!is_native_ad_request("https://gql.twitch.tv/gql"));
+        assert!(!is_native_ad_request(
+            "https://usher.ttvnw.net/api/channel/hls/example.m3u8"
+        ));
+    }
+
+    #[test]
+    fn repairs_worker_scope_in_existing_plugin_without_replacing_custom_content() {
+        let directory = std::env::temp_dir().join(format!(
+            "twitch-client-adblock-scope-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("ad-blocker.js");
+        let broken = "(() => {\n  installStyle();\n})();\n\n// Adapted from My AdBlock's Twitch worker patch.\n// Copyright (c) 2026 Jakub L. Licensed under MIT; see\n// licenses/my-adblock-LICENSE.txt.\n(() => {\n  \"use strict\";\n  function isPlayerWorker() { return rules.twitch.worker_identifiers; }\n  // user customization\n})();\n";
+        let expected = "(() => {\n  installStyle();\n\n// Adapted from My AdBlock's Twitch worker patch.\n// Copyright (c) 2026 Jakub L. Licensed under MIT; see\n// licenses/my-adblock-LICENSE.txt.\n  function isPlayerWorker() { return rules.twitch.worker_identifiers; }\n  // user customization\n})();\n";
+        std::fs::write(&path, broken.replace('\n', "\r\n")).unwrap();
+
+        repair_adblocker_worker_scope(&path).unwrap();
+        let repaired = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(repaired, expected.replace('\n', "\r\n"));
+        repair_adblocker_worker_scope(&path).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), repaired);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
@@ -876,7 +1047,6 @@ mod tests {
         ));
         std::fs::create_dir_all(&directory).unwrap();
         let path = directory.join("ad-blocker.js");
-
         std::fs::write(&path, "old bundled source").unwrap();
         upgrade_example_if_unchanged(&path, "old bundled source", "updated source").unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "updated source");
@@ -884,6 +1054,28 @@ mod tests {
         std::fs::write(&path, "custom source").unwrap();
         upgrade_example_if_unchanged(&path, "old bundled source", "newer source").unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "custom source");
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn yaml_plugin_setting_migrates_to_the_bundled_javascript_plugin() {
+        let directory =
+            std::env::temp_dir().join(format!("twitch-client-adblock-yaml-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let settings_path = directory.join("settings.json");
+        let mut settings = Settings {
+            plugins: BTreeSet::from(["ad-blocker.yaml".to_owned(), "custom.js".to_owned()]),
+            ..Settings::default()
+        };
+        save_settings(&settings_path, &settings).unwrap();
+        migrate_adblocker_setting(&settings_path, &mut settings).unwrap();
+        assert!(settings.plugins.contains("ad-blocker.js"));
+        assert!(settings.plugins.contains("custom.js"));
+        assert!(!settings.plugins.contains("ad-blocker.yaml"));
+        assert_eq!(
+            load_settings(&settings_path).unwrap().plugins,
+            settings.plugins
+        );
         std::fs::remove_dir_all(directory).unwrap();
     }
 

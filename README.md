@@ -2,7 +2,8 @@
 
 A lightweight Rust desktop shell that opens the official Twitch website in a
 native Windows window. Twitch provides the browsing, streaming, chat, and
-account features; the client does not use Twitch API credentials.
+account features; the client does not require developer-provided Twitch API
+credentials.
 
 ## Requirements
 
@@ -48,6 +49,28 @@ Custom themes are `.css` files in
 `%LOCALAPPDATA%\TwitchWindowsClient\themes`. The bundled `catppuccin-mocha.css`
 is an example. Custom plugins are `.js` files in
 `%LOCALAPPDATA%\TwitchWindowsClient\plugins`; the bundled ad blocker is off
+until you explicitly enable it. Its implementation is the
+`%LOCALAPPDATA%\TwitchWindowsClient\plugins\ad-blocker.js` script. On upgrade,
+an unchanged bundled script is updated; customized plugin files are left
+untouched.
+
+When enabled, the bundled ad blocker uses WebView2's native
+`WebResourceRequested` interception to return an empty response for known
+client-side ad hosts. It deliberately does not block Twitch's GraphQL,
+usher/HLS playlist, or media-segment requests. The player-worker hook handles
+stitched HLS ads separately: it identifies marked ad segments and, when
+available, substitutes only a same-time, same-quality live segment from an
+alternate Twitch player playlist. It preserves the original playlist's
+sequence, timestamps, map, and encryption tags; if it cannot find a safe
+match, it leaves the segment alone rather than risking a stalled player. This
+is best-effort: Twitch changes its ad delivery, and no client-side blocker can
+promise to remove every ad without any playback risk.
+
+Use **Picture-in-Picture** in Client settings to pop the playing video out into
+WebView2's native floating video window. It stays above other windows and
+provides the browser's built-in Picture-in-Picture controls. Enter 2-4
+comma-separated channel names in the multi-stream field to open them together
+in a resizable grid window; audio is enabled for the first stream only.
 until you explicitly enable it. Restart the app after adding or removing files.
 On upgrade, an unchanged copy of the previous bundled ad blocker is updated;
 customized plugin files are left untouched.
