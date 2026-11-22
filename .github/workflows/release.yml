@@ -14,7 +14,7 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@stable
@@ -51,14 +51,14 @@ jobs:
           Compress-Archive -Path @("dist\$name.exe", "dist\README.md", "dist\CHANGELOG.md", "dist\LICENSE") -DestinationPath "dist\$name.zip"
 
       - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: twitch-windows-client-windows-x64
           path: dist/*
           if-no-files-found: error
 
       - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.package.outputs.release_tag }}
           target_commitish: ${{ github.sha }}
