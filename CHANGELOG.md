@@ -14,6 +14,8 @@
 
 ### Fixed
 
+- Avoid applying Windows job limits when no resource cap is configured.
+
 ## [1.0.2] - 2026-11-14
 
 ### Added

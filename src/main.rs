@@ -679,9 +679,10 @@ fn apply_resource_limits(
     cpu_percent: Option<u32>,
     ram_mb: Option<u32>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use std::sync::OnceLock;
+    use std::sync::{Mutex, OnceLock};
     use windows::{
         core::PCWSTR,
+        Win32::Foundation::{CloseHandle, HANDLE},
         Win32::System::{
             JobObjects::{
                 AssignProcessToJobObject, CreateJobObjectW, JobObjectCpuRateControlInformation,
@@ -694,27 +695,40 @@ fn apply_resource_limits(
         },
     };
 
-    static JOB_HANDLE: OnceLock<isize> = OnceLock::new();
-    let handle = *JOB_HANDLE.get_or_init(|| unsafe {
-        CreateJobObjectW(None, PCWSTR::null())
-            .map(|handle| handle.0 as isize)
-            .unwrap_or(0)
-    });
-    if handle == 0 {
-        return Err("Windows could not create a resource limit job".into());
+    if cpu_percent.is_some_and(|value| !(10..=100).contains(&value))
+        || ram_mb.is_some_and(|value| !(256..=16384).contains(&value))
+    {
+        return Err("Resource limits are outside the supported range".into());
     }
-    let handle = windows::Win32::Foundation::HANDLE(handle as *mut core::ffi::c_void);
 
-    unsafe {
-        AssignProcessToJobObject(handle, GetCurrentProcess())?;
+    static JOB_HANDLE: OnceLock<Mutex<Option<isize>>> = OnceLock::new();
+    let job_handle = JOB_HANDLE.get_or_init(|| Mutex::new(None));
+    let mut job_handle = job_handle
+        .lock()
+        .map_err(|_| "Resource limit job lock is poisoned")?;
+    if cpu_percent.is_none() && ram_mb.is_none() && job_handle.is_none() {
+        return Ok(());
     }
+
+    let handle = if let Some(handle) = *job_handle {
+        HANDLE(handle as *mut core::ffi::c_void)
+    } else {
+        let handle = unsafe { CreateJobObjectW(None, PCWSTR::null())? };
+        if let Err(error) = unsafe { AssignProcessToJobObject(handle, GetCurrentProcess()) } {
+            unsafe {
+                let _ = CloseHandle(handle);
+            }
+            return Err(error.into());
+        }
+        *job_handle = Some(handle.0 as isize);
+        handle
+    };
 
     if let Some(cpu) = cpu_percent {
-        let cpu = cpu.clamp(10, 100);
         let mut cpu_info = JOBOBJECT_CPU_RATE_CONTROL_INFORMATION::default();
         cpu_info.ControlFlags =
             JOB_OBJECT_CPU_RATE_CONTROL_ENABLE | JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP;
-        cpu_info.Anonymous = JOBOBJECT_CPU_RATE_CONTROL_INFORMATION_0 { CpuRate: cpu };
+        cpu_info.Anonymous = JOBOBJECT_CPU_RATE_CONTROL_INFORMATION_0 { CpuRate: cpu * 100 };
         unsafe {
             SetInformationJobObject(
                 handle,
@@ -966,6 +980,11 @@ mod tests {
             &valid_plugins,
             &valid_themes,
         ));
+    }
+
+    #[test]
+    fn no_resource_limits_do_not_create_a_windows_job() {
+        super::apply_resource_limits(None, None).unwrap();
     }
 
     #[test]
