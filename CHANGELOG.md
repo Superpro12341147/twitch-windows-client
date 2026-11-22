@@ -1,13 +1,8 @@
 # Changelog
 
-## Unreleased
+## [1.0.3-pre.1] - 2026-11-21
 
 ### Added
-
-- Add an app-specific Twitch ad blocker that matches alternate live HLS
-  segments by media time without replacing the player's whole playlist.
-- Add native WebView2 request interception for known client-side ad hosts,
-  without blocking Twitch playlists or media segments.
 
 ### Changed
 
@@ -15,13 +10,6 @@
   browser-style floating video window and native controls.
 
 ### Fixed
-
-- Avoid corrupting playback when an ad playlist has no clean alternate, and
-  preserve sequence and timing metadata when replacing a matched ad segment.
-- Fetch and refresh alternate playlists in the background so failed requests
-  do not stall the player.
-- Migrate the previous YAML ad-blocker setting back to the bundled JavaScript
-  plugin.
 
 ## [1.0.2] - 2026-11-14
 
@@ -32,12 +20,6 @@
   console warning about inspecting signed-in session data.
 - Add a draggable always-on-top mini player and a resizable 2-4 stream grid.
 - Keep multi-stream audio limited to the first stream.
-- Integrate Twitch stream-ad playlist handling adapted from My AdBlock.
-
-### Changed
-
-- Update unchanged copies of the previous bundled ad blocker while preserving
-  user-customized plugin files.
 
 ## [1.0.1] - 2026-11-14
 
@@ -59,11 +41,6 @@
 - Correct plugin initialization and mount the settings panel in Twitch's
   top navigation.
 - Expand the example theme to cover Twitch page surfaces and controls.
-
-### Known limitations
-
-- The example ad blocker filters some third-party ad requests and banner
-  elements, but does not block Twitch in-stream ads.
 
 ## [1.0.0] - 2026-11-14
 

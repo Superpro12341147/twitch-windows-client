@@ -47,8 +47,8 @@ jobs:
           $name = "TwitchWindowsClient-v$version-windows-x64"
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           Copy-Item target\release\twitch-windows-client.exe "dist\$name.exe"
-          Copy-Item -Path @("README.md", "CHANGELOG.md", "LICENSE", "licenses\my-adblock-LICENSE.txt") -Destination dist
-          Compress-Archive -Path @("dist\$name.exe", "dist\README.md", "dist\CHANGELOG.md", "dist\LICENSE", "dist\my-adblock-LICENSE.txt") -DestinationPath "dist\$name.zip"
+          Copy-Item -Path @("README.md", "CHANGELOG.md", "LICENSE") -Destination dist
+          Compress-Archive -Path @("dist\$name.exe", "dist\README.md", "dist\CHANGELOG.md", "dist\LICENSE") -DestinationPath "dist\$name.zip"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
@@ -57,12 +57,13 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
-      - name: Create draft GitHub release
+      - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.package.outputs.release_tag }}
           target_commitish: ${{ github.sha }}
-          draft: true
+          draft: ${{ !startsWith(github.ref, 'refs/tags/') }}
+          prerelease: ${{ startsWith(github.ref, 'refs/tags/') }}
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |
