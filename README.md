@@ -19,7 +19,10 @@ WebView2 sign-in profile is preserved.
 
 Custom themes are `.css` files in
 `%LOCALAPPDATA%\TwitchWindowsClient\themes`. The bundled `catppuccin-mocha.css`
-is an example. Custom plugins are `.js` files in
+is installed automatically. Bundled `.js` plugins and `.css` themes are
+installed and discovered automatically; plugins remain disabled until enabled
+in Client settings, and themes remain selectable there. Custom plugins are
+`.js` files in
 `%LOCALAPPDATA%\TwitchWindowsClient\plugins`.
 
 Use **Picture-in-Picture** in Client settings to pop the playing video out into
@@ -36,6 +39,12 @@ audio is enabled for the first stream only.
 Press **F12** or choose **Inspect page** in Client settings to open Developer
 Tools. The console logs a warning because DevTools can inspect page content and
 your signed-in session. Do not copy or share cookies or tokens.
+
+The built-in **Resource limiter** plugin can apply CPU and RAM caps to the
+Windows client process through Client settings. It is installed automatically
+in `%LOCALAPPDATA%\TwitchWindowsClient\plugins` and may be enabled or disabled
+like other plugins. WebView2 child processes may remain outside the client
+process job.
 
 Plugins execute as Twitch page scripts and may act through your signed-in
 session, so only enable code you trust. Themes are CSS-only but can still load

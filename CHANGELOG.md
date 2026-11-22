@@ -4,12 +4,17 @@
 
 ### Added
 
+- Add a resource limiter plugin with native CPU and RAM controls.
+- Automatically install and discover bundled plugins and themes.
+
 ### Changed
 
 - Replace the mini-player page window with WebView2 Picture-in-Picture for a
   browser-style floating video window and native controls.
 
 ### Fixed
+
+- Avoid applying Windows job limits when no resource cap is configured.
 
 ## [1.0.2] - 2026-11-14
 

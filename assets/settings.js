@@ -189,6 +189,56 @@
       send({ type: "open_dev_tools" });
     });
 
+    addSection("Resource limiter");
+    const cpuSelect = document.createElement("select");
+    cpuSelect.setAttribute("aria-label", "CPU limit");
+    for (const [value, text] of [
+      ["", "Unlimited CPU"],
+      ["25", "25% CPU"],
+      ["50", "50% CPU"],
+      ["75", "75% CPU"],
+      ["100", "100% CPU"],
+    ]) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = text;
+      cpuSelect.appendChild(option);
+    }
+    cpuSelect.value = config.settings.resource_cpu_percent?.toString() || "";
+    panel.appendChild(cpuSelect);
+
+    const ramSelect = document.createElement("select");
+    ramSelect.setAttribute("aria-label", "RAM limit");
+    for (const [value, text] of [
+      ["", "Unlimited RAM"],
+      ["512", "512 MB RAM"],
+      ["1024", "1 GB RAM"],
+      ["2048", "2 GB RAM"],
+      ["4096", "4 GB RAM"],
+      ["8192", "8 GB RAM"],
+      ["16384", "16 GB RAM"],
+    ]) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = text;
+      ramSelect.appendChild(option);
+    }
+    ramSelect.value = config.settings.resource_ram_mb?.toString() || "";
+    ramSelect.style.marginTop = "8px";
+    panel.appendChild(ramSelect);
+
+    addAction("Apply resource limits", () => {
+      send({
+        type: "set_resource_limits",
+        cpu_percent: cpuSelect.value ? Number(cpuSelect.value) : null,
+        ram_mb: ramSelect.value ? Number(ramSelect.value) : null,
+      });
+    });
+    const resourceHint = document.createElement("p");
+    resourceHint.textContent =
+      "Applies Windows process limits to the Twitch client. WebView2 child processes may remain outside the same job.";
+    panel.appendChild(resourceHint);
+
     addSection("Plugins");
     if (config.plugins.length === 0) {
       const empty = document.createElement("p");

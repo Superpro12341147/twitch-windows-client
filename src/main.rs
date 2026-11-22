@@ -1,6 +1,9 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 #[cfg(target_os = "windows")]
+include!(concat!(env!("OUT_DIR"), "/bundled_assets.rs"));
+
+#[cfg(target_os = "windows")]
 fn main() {
     if let Err(error) = run() {
         show_error(&error.to_string());
@@ -108,9 +111,20 @@ fn create_start_menu_shortcut() -> Result<(), Box<dyn std::error::Error>> {
 #[derive(serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum UiMessage {
-    SetPlugin { name: String, enabled: bool },
-    SetTheme { name: Option<String> },
-    OpenMultiStream { channels: Vec<String> },
+    SetPlugin {
+        name: String,
+        enabled: bool,
+    },
+    SetTheme {
+        name: Option<String>,
+    },
+    SetResourceLimits {
+        cpu_percent: Option<u32>,
+        ram_mb: Option<u32>,
+    },
+    OpenMultiStream {
+        channels: Vec<String>,
+    },
     OpenDevTools,
 }
 
@@ -120,6 +134,8 @@ enum UiMessage {
 struct Settings {
     plugins: std::collections::BTreeSet<String>,
     theme: Option<String>,
+    resource_cpu_percent: Option<u32>,
+    resource_ram_mb: Option<u32>,
 }
 
 #[cfg(target_os = "windows")]
@@ -168,16 +184,24 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     fs::create_dir_all(&webview_data_dir)?;
     let plugins_dir = app_data_dir.join("plugins");
     let themes_dir = app_data_dir.join("themes");
+    fs::create_dir_all(&plugins_dir)?;
     ensure_example(
-        &themes_dir,
-        "catppuccin-mocha.css",
-        include_str!("../themes/catppuccin-mocha.css"),
+        &plugins_dir,
+        "resource-limiter.js",
+        include_str!("../assets/resource-limiter.js"),
     )?;
+    for (filename, source) in BUNDLED_PLUGINS {
+        ensure_example(&plugins_dir, filename, source)?;
+    }
+    for (filename, source) in BUNDLED_THEMES {
+        ensure_example(&themes_dir, filename, source)?;
+    }
     create_start_menu_shortcut()?;
 
     let settings_path = app_data_dir.join("settings.json");
-    let mut settings = load_settings(&settings_path)?;
-    remove_adblocker_settings(&settings_path, &mut settings)?;
+    let settings = load_settings(&settings_path)?;
+    apply_resource_limits(settings.resource_cpu_percent, settings.resource_ram_mb)
+        .map_err(|error| io::Error::other(error.to_string()))?;
     let plugins = load_plugins(&plugins_dir)?;
     let themes = load_themes(&themes_dir)?;
 
@@ -331,6 +355,8 @@ fn build_webview(
         "settings": {
             "plugins": settings.plugins.iter().collect::<Vec<_>>(),
             "theme": settings.theme,
+            "resource_cpu_percent": settings.resource_cpu_percent,
+            "resource_ram_mb": settings.resource_ram_mb,
         }
     });
     let settings_script = format!(
@@ -423,6 +449,7 @@ fn build_webview(
                 }
                 return;
             }
+            UiMessage::SetResourceLimits { .. } => {}
             _ => {}
         }
         let mut settings = match load_settings(&settings_path) {
@@ -601,6 +628,23 @@ fn apply_ui_message(
             settings.theme = name;
             true
         }
+        UiMessage::SetResourceLimits {
+            cpu_percent,
+            ram_mb,
+        } => {
+            if cpu_percent.is_some_and(|value| !(10..=100).contains(&value))
+                || ram_mb.is_some_and(|value| !(256..=16384).contains(&value))
+            {
+                return false;
+            }
+            if let Err(error) = apply_resource_limits(cpu_percent, ram_mb) {
+                show_error(&format!("Could not apply resource limits: {error}"));
+                return false;
+            }
+            settings.resource_cpu_percent = cpu_percent;
+            settings.resource_ram_mb = ram_mb;
+            true
+        }
         _ => false,
     }
 }
@@ -631,6 +675,111 @@ fn are_valid_multi_stream_channels(channels: &[String]) -> bool {
 }
 
 #[cfg(target_os = "windows")]
+fn apply_resource_limits(
+    cpu_percent: Option<u32>,
+    ram_mb: Option<u32>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use std::sync::{Mutex, OnceLock};
+    use windows::{
+        core::PCWSTR,
+        Win32::Foundation::{CloseHandle, HANDLE},
+        Win32::System::{
+            JobObjects::{
+                AssignProcessToJobObject, CreateJobObjectW, JobObjectCpuRateControlInformation,
+                JobObjectExtendedLimitInformation, SetInformationJobObject,
+                JOBOBJECT_CPU_RATE_CONTROL_INFORMATION, JOBOBJECT_CPU_RATE_CONTROL_INFORMATION_0,
+                JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_CPU_RATE_CONTROL_ENABLE,
+                JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP, JOB_OBJECT_LIMIT_PROCESS_MEMORY,
+            },
+            Threading::GetCurrentProcess,
+        },
+    };
+
+    if cpu_percent.is_some_and(|value| !(10..=100).contains(&value))
+        || ram_mb.is_some_and(|value| !(256..=16384).contains(&value))
+    {
+        return Err("Resource limits are outside the supported range".into());
+    }
+
+    static JOB_HANDLE: OnceLock<Mutex<Option<isize>>> = OnceLock::new();
+    let job_handle = JOB_HANDLE.get_or_init(|| Mutex::new(None));
+    let mut job_handle = job_handle
+        .lock()
+        .map_err(|_| "Resource limit job lock is poisoned")?;
+    if cpu_percent.is_none() && ram_mb.is_none() && job_handle.is_none() {
+        return Ok(());
+    }
+
+    let handle = if let Some(handle) = *job_handle {
+        HANDLE(handle as *mut core::ffi::c_void)
+    } else {
+        let handle = unsafe { CreateJobObjectW(None, PCWSTR::null())? };
+        if let Err(error) = unsafe { AssignProcessToJobObject(handle, GetCurrentProcess()) } {
+            unsafe {
+                let _ = CloseHandle(handle);
+            }
+            return Err(error.into());
+        }
+        *job_handle = Some(handle.0 as isize);
+        handle
+    };
+
+    if let Some(cpu) = cpu_percent {
+        let mut cpu_info = JOBOBJECT_CPU_RATE_CONTROL_INFORMATION::default();
+        cpu_info.ControlFlags =
+            JOB_OBJECT_CPU_RATE_CONTROL_ENABLE | JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP;
+        cpu_info.Anonymous = JOBOBJECT_CPU_RATE_CONTROL_INFORMATION_0 { CpuRate: cpu * 100 };
+        unsafe {
+            SetInformationJobObject(
+                handle,
+                JobObjectCpuRateControlInformation,
+                &cpu_info as *const _ as *const core::ffi::c_void,
+                std::mem::size_of::<JOBOBJECT_CPU_RATE_CONTROL_INFORMATION>() as u32,
+            )?;
+        }
+    } else {
+        let cpu_info = JOBOBJECT_CPU_RATE_CONTROL_INFORMATION::default();
+        unsafe {
+            SetInformationJobObject(
+                handle,
+                JobObjectCpuRateControlInformation,
+                &cpu_info as *const _ as *const core::ffi::c_void,
+                std::mem::size_of::<JOBOBJECT_CPU_RATE_CONTROL_INFORMATION>() as u32,
+            )?;
+        }
+    }
+
+    if let Some(ram) = ram_mb {
+        let ram = ram.clamp(256, 16384) as usize * 1024 * 1024;
+        let mut memory_info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        memory_info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_PROCESS_MEMORY;
+        memory_info.ProcessMemoryLimit = ram;
+        unsafe {
+            SetInformationJobObject(
+                handle,
+                JobObjectExtendedLimitInformation,
+                &memory_info as *const _ as *const core::ffi::c_void,
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            )?;
+        }
+    } else {
+        let mut memory_info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        memory_info.BasicLimitInformation.LimitFlags = Default::default();
+        memory_info.ProcessMemoryLimit = 0;
+        unsafe {
+            SetInformationJobObject(
+                handle,
+                JobObjectExtendedLimitInformation,
+                &memory_info as *const _ as *const core::ffi::c_void,
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
 fn ensure_example(
     directory: &std::path::Path,
     filename: &str,
@@ -658,19 +807,6 @@ fn ensure_example(
 }
 
 #[cfg(target_os = "windows")]
-fn remove_adblocker_settings(
-    settings_path: &std::path::Path,
-    settings: &mut Settings,
-) -> std::io::Result<()> {
-    let removed =
-        settings.plugins.remove("ad-blocker.js") | settings.plugins.remove("ad-blocker.yaml");
-    if removed {
-        save_settings(settings_path, settings)?;
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "windows")]
 fn load_plugins(plugin_dir: &std::path::Path) -> std::io::Result<Vec<Plugin>> {
     use std::{ffi::OsStr, fs, io};
 
@@ -688,11 +824,6 @@ fn load_plugins(plugin_dir: &std::path::Path) -> std::io::Result<Vec<Plugin>> {
         }
         let path = entry.path();
         let filename = entry.file_name().to_string_lossy().into_owned();
-        if filename.eq_ignore_ascii_case("ad-blocker.js")
-            || filename.eq_ignore_ascii_case("ad-blocker.yaml")
-        {
-            continue;
-        }
         let source = fs::read_to_string(&path).map_err(|error| {
             io::Error::new(
                 error.kind(),
@@ -759,8 +890,8 @@ fn save_settings(path: &std::path::Path, settings: &Settings) -> std::io::Result
 #[cfg(all(test, target_os = "windows"))]
 mod tests {
     use super::{
-        apply_ui_message, load_settings, remove_adblocker_settings, save_settings, Settings,
-        UiMessage,
+        apply_ui_message, ensure_example, load_plugins, load_themes, Settings, UiMessage,
+        BUNDLED_PLUGINS, BUNDLED_THEMES,
     };
     use std::collections::BTreeSet;
 
@@ -826,24 +957,67 @@ mod tests {
     }
 
     #[test]
-    fn removed_adblocker_settings_are_not_preserved() {
-        let directory =
-            std::env::temp_dir().join(format!("twitch-client-adblock-yaml-{}", std::process::id()));
+    fn resource_limits_reject_out_of_range_values() {
+        let valid_plugins = BTreeSet::new();
+        let valid_themes = BTreeSet::new();
+        let mut settings = Settings::default();
+
+        assert!(!apply_ui_message(
+            &mut settings,
+            UiMessage::SetResourceLimits {
+                cpu_percent: Some(5),
+                ram_mb: None,
+            },
+            &valid_plugins,
+            &valid_themes,
+        ));
+        assert!(!apply_ui_message(
+            &mut settings,
+            UiMessage::SetResourceLimits {
+                cpu_percent: None,
+                ram_mb: Some(128),
+            },
+            &valid_plugins,
+            &valid_themes,
+        ));
+    }
+
+    #[test]
+    fn no_resource_limits_do_not_create_a_windows_job() {
+        super::apply_resource_limits(None, None).unwrap();
+    }
+
+    #[test]
+    fn bundled_plugins_are_installed_and_discovered_automatically() {
+        let directory = std::env::temp_dir().join(format!(
+            "twitch-client-bundled-plugins-{}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&directory).unwrap();
-        let settings_path = directory.join("settings.json");
-        let mut settings = Settings {
-            plugins: BTreeSet::from(["ad-blocker.yaml".to_owned(), "custom.js".to_owned()]),
-            ..Settings::default()
-        };
-        save_settings(&settings_path, &settings).unwrap();
-        remove_adblocker_settings(&settings_path, &mut settings).unwrap();
-        assert!(!settings.plugins.contains("ad-blocker.js"));
-        assert!(settings.plugins.contains("custom.js"));
-        assert!(!settings.plugins.contains("ad-blocker.yaml"));
-        assert_eq!(
-            load_settings(&settings_path).unwrap().plugins,
-            settings.plugins
-        );
+        for (filename, source) in BUNDLED_PLUGINS {
+            ensure_example(&directory, filename, source).unwrap();
+        }
+        let plugins = load_plugins(&directory).unwrap();
+        assert!(plugins
+            .iter()
+            .any(|plugin| plugin.filename == "ad-blocker.js"));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn bundled_themes_are_installed_and_discovered_automatically() {
+        let directory = std::env::temp_dir().join(format!(
+            "twitch-client-bundled-themes-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        for (filename, source) in BUNDLED_THEMES {
+            ensure_example(&directory, filename, source).unwrap();
+        }
+        let themes = load_themes(&directory).unwrap();
+        assert!(themes
+            .iter()
+            .any(|theme| theme.filename == "catppuccin-mocha.css"));
         std::fs::remove_dir_all(directory).unwrap();
     }
 
