@@ -4,6 +4,8 @@
 
 ### Added
 
+- Add a resource limiter plugin with native CPU and RAM controls.
+
 ### Changed
 
 - Replace the mini-player page window with WebView2 Picture-in-Picture for a

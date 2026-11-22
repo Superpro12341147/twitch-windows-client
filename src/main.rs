@@ -108,9 +108,20 @@ fn create_start_menu_shortcut() -> Result<(), Box<dyn std::error::Error>> {
 #[derive(serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum UiMessage {
-    SetPlugin { name: String, enabled: bool },
-    SetTheme { name: Option<String> },
-    OpenMultiStream { channels: Vec<String> },
+    SetPlugin {
+        name: String,
+        enabled: bool,
+    },
+    SetTheme {
+        name: Option<String>,
+    },
+    SetResourceLimits {
+        cpu_percent: Option<u32>,
+        ram_mb: Option<u32>,
+    },
+    OpenMultiStream {
+        channels: Vec<String>,
+    },
     OpenDevTools,
 }
 
@@ -120,6 +131,8 @@ enum UiMessage {
 struct Settings {
     plugins: std::collections::BTreeSet<String>,
     theme: Option<String>,
+    resource_cpu_percent: Option<u32>,
+    resource_ram_mb: Option<u32>,
 }
 
 #[cfg(target_os = "windows")]
@@ -168,6 +181,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     fs::create_dir_all(&webview_data_dir)?;
     let plugins_dir = app_data_dir.join("plugins");
     let themes_dir = app_data_dir.join("themes");
+    fs::create_dir_all(&plugins_dir)?;
+    ensure_example(
+        &plugins_dir,
+        "resource-limiter.js",
+        include_str!("../assets/resource-limiter.js"),
+    )?;
     ensure_example(
         &themes_dir,
         "catppuccin-mocha.css",
@@ -178,6 +197,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let settings_path = app_data_dir.join("settings.json");
     let mut settings = load_settings(&settings_path)?;
     remove_adblocker_settings(&settings_path, &mut settings)?;
+    apply_resource_limits(settings.resource_cpu_percent, settings.resource_ram_mb)
+        .map_err(|error| io::Error::other(error.to_string()))?;
     let plugins = load_plugins(&plugins_dir)?;
     let themes = load_themes(&themes_dir)?;
 
@@ -331,6 +352,8 @@ fn build_webview(
         "settings": {
             "plugins": settings.plugins.iter().collect::<Vec<_>>(),
             "theme": settings.theme,
+            "resource_cpu_percent": settings.resource_cpu_percent,
+            "resource_ram_mb": settings.resource_ram_mb,
         }
     });
     let settings_script = format!(
@@ -423,6 +446,7 @@ fn build_webview(
                 }
                 return;
             }
+            UiMessage::SetResourceLimits { .. } => {}
             _ => {}
         }
         let mut settings = match load_settings(&settings_path) {
@@ -601,6 +625,23 @@ fn apply_ui_message(
             settings.theme = name;
             true
         }
+        UiMessage::SetResourceLimits {
+            cpu_percent,
+            ram_mb,
+        } => {
+            if cpu_percent.is_some_and(|value| !(10..=100).contains(&value))
+                || ram_mb.is_some_and(|value| !(256..=16384).contains(&value))
+            {
+                return false;
+            }
+            if let Err(error) = apply_resource_limits(cpu_percent, ram_mb) {
+                show_error(&format!("Could not apply resource limits: {error}"));
+                return false;
+            }
+            settings.resource_cpu_percent = cpu_percent;
+            settings.resource_ram_mb = ram_mb;
+            true
+        }
         _ => false,
     }
 }
@@ -628,6 +669,97 @@ fn are_valid_multi_stream_channels(channels: &[String]) -> bool {
             .collect::<BTreeSet<_>>()
             .len()
             == channels.len()
+}
+
+#[cfg(target_os = "windows")]
+fn apply_resource_limits(
+    cpu_percent: Option<u32>,
+    ram_mb: Option<u32>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use std::sync::OnceLock;
+    use windows::{
+        core::PCWSTR,
+        Win32::System::{
+            JobObjects::{
+                AssignProcessToJobObject, CreateJobObjectW, JobObjectCpuRateControlInformation,
+                JobObjectExtendedLimitInformation, SetInformationJobObject,
+                JOBOBJECT_CPU_RATE_CONTROL_INFORMATION, JOBOBJECT_CPU_RATE_CONTROL_INFORMATION_0,
+                JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_CPU_RATE_CONTROL_ENABLE,
+                JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP, JOB_OBJECT_LIMIT_PROCESS_MEMORY,
+            },
+            Threading::GetCurrentProcess,
+        },
+    };
+
+    static JOB_HANDLE: OnceLock<isize> = OnceLock::new();
+    let handle = *JOB_HANDLE.get_or_init(|| unsafe {
+        CreateJobObjectW(None, PCWSTR::null())
+            .map(|handle| handle.0 as isize)
+            .unwrap_or(0)
+    });
+    if handle == 0 {
+        return Err("Windows could not create a resource limit job".into());
+    }
+    let handle = windows::Win32::Foundation::HANDLE(handle as *mut core::ffi::c_void);
+
+    unsafe {
+        AssignProcessToJobObject(handle, GetCurrentProcess())?;
+    }
+
+    if let Some(cpu) = cpu_percent {
+        let cpu = cpu.clamp(10, 100);
+        let mut cpu_info = JOBOBJECT_CPU_RATE_CONTROL_INFORMATION::default();
+        cpu_info.ControlFlags =
+            JOB_OBJECT_CPU_RATE_CONTROL_ENABLE | JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP;
+        cpu_info.Anonymous = JOBOBJECT_CPU_RATE_CONTROL_INFORMATION_0 { CpuRate: cpu };
+        unsafe {
+            SetInformationJobObject(
+                handle,
+                JobObjectCpuRateControlInformation,
+                &cpu_info as *const _ as *const core::ffi::c_void,
+                std::mem::size_of::<JOBOBJECT_CPU_RATE_CONTROL_INFORMATION>() as u32,
+            )?;
+        }
+    } else {
+        let cpu_info = JOBOBJECT_CPU_RATE_CONTROL_INFORMATION::default();
+        unsafe {
+            SetInformationJobObject(
+                handle,
+                JobObjectCpuRateControlInformation,
+                &cpu_info as *const _ as *const core::ffi::c_void,
+                std::mem::size_of::<JOBOBJECT_CPU_RATE_CONTROL_INFORMATION>() as u32,
+            )?;
+        }
+    }
+
+    if let Some(ram) = ram_mb {
+        let ram = ram.clamp(256, 16384) as usize * 1024 * 1024;
+        let mut memory_info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        memory_info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_PROCESS_MEMORY;
+        memory_info.ProcessMemoryLimit = ram;
+        unsafe {
+            SetInformationJobObject(
+                handle,
+                JobObjectExtendedLimitInformation,
+                &memory_info as *const _ as *const core::ffi::c_void,
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            )?;
+        }
+    } else {
+        let mut memory_info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        memory_info.BasicLimitInformation.LimitFlags = Default::default();
+        memory_info.ProcessMemoryLimit = 0;
+        unsafe {
+            SetInformationJobObject(
+                handle,
+                JobObjectExtendedLimitInformation,
+                &memory_info as *const _ as *const core::ffi::c_void,
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            )?;
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(target_os = "windows")]
@@ -823,6 +955,32 @@ mod tests {
             &valid_themes,
         ));
         assert_eq!(settings.theme.as_deref(), Some("theme.css"));
+    }
+
+    #[test]
+    fn resource_limits_reject_out_of_range_values() {
+        let valid_plugins = BTreeSet::new();
+        let valid_themes = BTreeSet::new();
+        let mut settings = Settings::default();
+
+        assert!(!apply_ui_message(
+            &mut settings,
+            UiMessage::SetResourceLimits {
+                cpu_percent: Some(5),
+                ram_mb: None,
+            },
+            &valid_plugins,
+            &valid_themes,
+        ));
+        assert!(!apply_ui_message(
+            &mut settings,
+            UiMessage::SetResourceLimits {
+                cpu_percent: None,
+                ram_mb: Some(128),
+            },
+            &valid_plugins,
+            &valid_themes,
+        ));
     }
 
     #[test]

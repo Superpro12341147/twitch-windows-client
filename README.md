@@ -37,6 +37,12 @@ Press **F12** or choose **Inspect page** in Client settings to open Developer
 Tools. The console logs a warning because DevTools can inspect page content and
 your signed-in session. Do not copy or share cookies or tokens.
 
+The built-in **Resource limiter** plugin can apply CPU and RAM caps to the
+Windows client process through Client settings. It is installed automatically
+in `%LOCALAPPDATA%\TwitchWindowsClient\plugins` and may be enabled or disabled
+like other plugins. WebView2 child processes may remain outside the client
+process job.
+
 Plugins execute as Twitch page scripts and may act through your signed-in
 session, so only enable code you trust. Themes are CSS-only but can still load
 remote resources; use trusted stylesheets. The app does not expose Twitch
