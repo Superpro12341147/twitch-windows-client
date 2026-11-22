@@ -1,6 +1,9 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 #[cfg(target_os = "windows")]
+include!(concat!(env!("OUT_DIR"), "/bundled_assets.rs"));
+
+#[cfg(target_os = "windows")]
 fn main() {
     if let Err(error) = run() {
         show_error(&error.to_string());
@@ -187,16 +190,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "resource-limiter.js",
         include_str!("../assets/resource-limiter.js"),
     )?;
-    ensure_example(
-        &themes_dir,
-        "catppuccin-mocha.css",
-        include_str!("../themes/catppuccin-mocha.css"),
-    )?;
+    for (filename, source) in BUNDLED_PLUGINS {
+        ensure_example(&plugins_dir, filename, source)?;
+    }
+    for (filename, source) in BUNDLED_THEMES {
+        ensure_example(&themes_dir, filename, source)?;
+    }
     create_start_menu_shortcut()?;
 
     let settings_path = app_data_dir.join("settings.json");
-    let mut settings = load_settings(&settings_path)?;
-    remove_adblocker_settings(&settings_path, &mut settings)?;
+    let settings = load_settings(&settings_path)?;
     apply_resource_limits(settings.resource_cpu_percent, settings.resource_ram_mb)
         .map_err(|error| io::Error::other(error.to_string()))?;
     let plugins = load_plugins(&plugins_dir)?;
@@ -790,19 +793,6 @@ fn ensure_example(
 }
 
 #[cfg(target_os = "windows")]
-fn remove_adblocker_settings(
-    settings_path: &std::path::Path,
-    settings: &mut Settings,
-) -> std::io::Result<()> {
-    let removed =
-        settings.plugins.remove("ad-blocker.js") | settings.plugins.remove("ad-blocker.yaml");
-    if removed {
-        save_settings(settings_path, settings)?;
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "windows")]
 fn load_plugins(plugin_dir: &std::path::Path) -> std::io::Result<Vec<Plugin>> {
     use std::{ffi::OsStr, fs, io};
 
@@ -820,11 +810,6 @@ fn load_plugins(plugin_dir: &std::path::Path) -> std::io::Result<Vec<Plugin>> {
         }
         let path = entry.path();
         let filename = entry.file_name().to_string_lossy().into_owned();
-        if filename.eq_ignore_ascii_case("ad-blocker.js")
-            || filename.eq_ignore_ascii_case("ad-blocker.yaml")
-        {
-            continue;
-        }
         let source = fs::read_to_string(&path).map_err(|error| {
             io::Error::new(
                 error.kind(),
@@ -891,8 +876,8 @@ fn save_settings(path: &std::path::Path, settings: &Settings) -> std::io::Result
 #[cfg(all(test, target_os = "windows"))]
 mod tests {
     use super::{
-        apply_ui_message, load_settings, remove_adblocker_settings, save_settings, Settings,
-        UiMessage,
+        apply_ui_message, ensure_example, load_plugins, load_themes, Settings, UiMessage,
+        BUNDLED_PLUGINS, BUNDLED_THEMES,
     };
     use std::collections::BTreeSet;
 
@@ -984,24 +969,36 @@ mod tests {
     }
 
     #[test]
-    fn removed_adblocker_settings_are_not_preserved() {
-        let directory =
-            std::env::temp_dir().join(format!("twitch-client-adblock-yaml-{}", std::process::id()));
+    fn bundled_plugins_are_installed_and_discovered_automatically() {
+        let directory = std::env::temp_dir().join(format!(
+            "twitch-client-bundled-plugins-{}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&directory).unwrap();
-        let settings_path = directory.join("settings.json");
-        let mut settings = Settings {
-            plugins: BTreeSet::from(["ad-blocker.yaml".to_owned(), "custom.js".to_owned()]),
-            ..Settings::default()
-        };
-        save_settings(&settings_path, &settings).unwrap();
-        remove_adblocker_settings(&settings_path, &mut settings).unwrap();
-        assert!(!settings.plugins.contains("ad-blocker.js"));
-        assert!(settings.plugins.contains("custom.js"));
-        assert!(!settings.plugins.contains("ad-blocker.yaml"));
-        assert_eq!(
-            load_settings(&settings_path).unwrap().plugins,
-            settings.plugins
-        );
+        for (filename, source) in BUNDLED_PLUGINS {
+            ensure_example(&directory, filename, source).unwrap();
+        }
+        let plugins = load_plugins(&directory).unwrap();
+        assert!(plugins
+            .iter()
+            .any(|plugin| plugin.filename == "ad-blocker.js"));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn bundled_themes_are_installed_and_discovered_automatically() {
+        let directory = std::env::temp_dir().join(format!(
+            "twitch-client-bundled-themes-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        for (filename, source) in BUNDLED_THEMES {
+            ensure_example(&directory, filename, source).unwrap();
+        }
+        let themes = load_themes(&directory).unwrap();
+        assert!(themes
+            .iter()
+            .any(|theme| theme.filename == "catppuccin-mocha.css"));
         std::fs::remove_dir_all(directory).unwrap();
     }
 

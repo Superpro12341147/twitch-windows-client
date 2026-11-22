@@ -19,7 +19,10 @@ WebView2 sign-in profile is preserved.
 
 Custom themes are `.css` files in
 `%LOCALAPPDATA%\TwitchWindowsClient\themes`. The bundled `catppuccin-mocha.css`
-is an example. Custom plugins are `.js` files in
+is installed automatically. Bundled `.js` plugins and `.css` themes are
+installed and discovered automatically; plugins remain disabled until enabled
+in Client settings, and themes remain selectable there. Custom plugins are
+`.js` files in
 `%LOCALAPPDATA%\TwitchWindowsClient\plugins`.
 
 Use **Picture-in-Picture** in Client settings to pop the playing video out into

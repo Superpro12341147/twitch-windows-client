@@ -5,6 +5,7 @@
 ### Added
 
 - Add a resource limiter plugin with native CPU and RAM controls.
+- Automatically install and discover bundled plugins and themes.
 
 ### Changed
 
