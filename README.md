@@ -11,34 +11,6 @@ credentials.
 - Rust stable with the MSVC toolchain
 - Visual Studio C++ Build Tools
 
-## Run
-
-```powershell
-cargo run
-```
-
-Build an optimized executable with:
-
-```powershell
-cargo build --release
-```
-
-The standalone GUI executable is
-`target\release\twitch-windows-client.exe`. It opens without a terminal window;
-startup errors are shown in a dialog.
-On first run, the app adds a shortcut to your per-user Windows Start Menu.
-
-## GitHub releases
-
-Push a version tag matching the version in `Cargo.toml` (for example,
-`v1.0.2`) or run the workflow manually to build the Windows release. Each run
-creates a **draft GitHub Release** containing the executable and a ZIP with the
-README, changelog, and license. Manual runs use a unique draft tag based on the
-workflow run number. Review the draft and publish it when ready.
-
-The WebView2 browser profile, including Twitch sign-in data, is stored under
-`%LOCALAPPDATA%\TwitchWindowsClient\WebView2`.
-
 ## Themes and plugins
 
 Use **Client settings** in Twitch's top navigation bar to choose a theme and
